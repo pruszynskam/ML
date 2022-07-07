@@ -1,0 +1,536 @@
+---
+title: "Application of machine learning in traffic and cocaine use modelling"
+author: "Magdalena Pruszyńska & Łukasz Pieńkowski"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+####### University of Warsaw
+# Traffic modelling
+
+## Introduction
+
+
+The road network is one of the infrastructures in the transportation system that performs important functions connecting places to promote accessibility. One of the most common problems that occur on roads is traffic congestion caused by excess vehicles. The effects of this problem are often detrimental because they affect travel costs, travel time, mobility, accessibility, productivity, and also impact the environment, such as through air pollution and global warming. In this study, we will use techniques to better understand traffic that is dynamic. The results of this study will focus on providing a tool that enables us to predict the traffic volume. We will also try to obtain more complete information to understand the phenomena and be able to describe it. However, accurate prediction is our main goal.
+
+
+##### Libraries used:
+```{r,message = FALSE,warning=FALSE}
+library(readr)
+library(knitr)
+library(DescTools)
+library(e1071) 
+library(gridExtra)
+library(psych)
+library(janitor)
+library(caret)
+library(corrplot)
+library(MLmetrics)
+library(fastDummies)
+library(ggplot2)
+library(DescTools)
+library(dplyr)
+library(olsrr)
+library(class)
+library(tidyverse)
+library(tree)
+library(kernlab)
+library(ROCR)
+```
+
+
+## Dataset info
+
+Traffic dataset consisted of 8 columns and 40292 observations. For the purpose of this analysis, it was split into train and test sets. Initial dataset carried the following information:
+
+date_time – date and time (1 hourly interval)
+weather_general – general short description of the current weather with the following example levels: Clear, Clouds, Drizzle
+weather_detailed – more detailed description of the current weather with the following example levels: thunderstorm with light rain, thunderstorm with rain, very heavy rain
+clouds_coverage – percentage of sky covered by the clouds in the hourly interval
+temperature – average temperature in the hourly interval (in Celsius degrees)
+rain_mm – amount of rain that occurred in the hourly interval (in mm)
+snow_mm – amount of snow that occurred in the hourly interval (in mm)
+traffic – the amount of traffic in the hourly interval (outcome variable, only in the training sample)
+
+```{r,echo=FALSE}
+rm(list = ls())
+```
+
+
+
+```{r pressure, message = FALSE, warning=FALSE,echo=FALSE}
+traffic_train <- read.csv("traffic_train.csv", header=TRUE, sep=",")
+kable(head(traffic_train), 'html', table.attr='id="id="cosm_table""', align = 'c', caption='Traffic dataset', col.names=c('Date','Weather general','Weather details','Clouds coverage in percentage','Temperature','Rain mm','Snow mm','Traffic'))
+```
+
+## Exploratory Data Analysis
+
+### Dependent Variable
+
+In order to gain an insight into the data and be able to generate new variables, an analysis of its most important characteristics was run. In order to describe the dependent variable itself, we need to take a look at the plots below. As we can see, the histogram of traffic does not look like any well-known distribution. The first valuable conclusion that we can draw from this plot and boxplot is that there might be some outliers (in particular, values close to max). When it comes down to the variability of the traffic, we can expect a high coefficient of variation and standard deviation which indicates that observations are not located in close proximity to each other. Thus, we should consider standardization of the dependent variable during the course of modelling.
+
+```{r, figures-side, fig.show="hold", out.width="50%", echo=FALSE}
+par(mar = c(4, 4, .1, .1))
+hist(traffic_train$traffic, col = "lightblue",main=NULL)
+boxplot(traffic_train$traffic, col = "lightgreen")
+```
+
+As it was said earlier, our model may be biased by outlying values. However, the mean and winsorized mean are not that different from each other. It is possible that this won't affect our analysis that much after all. The median value is also close to mean and equals 3309 which indicates that in case of 50% of observations, the traffic was lower and consequently, in 50% of cases, higher than 3309. Just as it was expected, the standard deviation is quite big (1989), similarly to the coefficient of variation - 61.6%. Consequently, IQR is also quite high. Skewness and kurtosis obviously does not match the normal distribution. 
+
+```{r, message = FALSE, warning=FALSE,echo=FALSE}
+cat(" Mean:",mean(traffic_train$traffic),"\n",
+          "Winsorized mean:",winsor.mean(traffic_train$traffic, trim=0.1),"\n",
+          "Median:",median(traffic_train$traffic),"\n",
+          "Standard deviation:",sd(traffic_train$traffic),"\n",
+          'Quantiles (0%,25%,50%,75%,100%):',quantile(traffic_train$traffic),"\n",
+          'Range:',range(traffic_train$traffic),"\n",
+          'Kurtosis:', kurtosis(traffic_train$traffic),"\n",
+          'Skewness:', skewness(traffic_train$traffic),"\n",
+          'Coefficient of variation %:',(sd(traffic_train$traffic)/mean(traffic_train$traffic)*100),"\n",
+          'IQR:',IQR(traffic_train$traffic))
+```
+
+### Relationships between dependent variable and independent variables
+
+#### Weather general
+
+We will start with Weather general variable. As it is a categorical variable, we can either generate dummies for every single unique value, create one binary variable out of all the values or scale the phenomena by creating a factor. However, before we skip to this part, it is always good to check if the variable differentiate the traffic in a significant way:
+
+```{r,echo=TRUE,message=TRUE}
+aov(traffic_train$traffic ~ traffic_train$weather_general) ->
+  traffic_anova
+summary(traffic_anova)
+```
+
+As we can see, there is some statistically significant difference between means for particular values of this variable. Thus, we can continue our analysis by plotting visuals:
+
+```{r,message=FALSE,echo=FALSE}
+boxplot(traffic_train$traffic~traffic_train$weather_general, traffic_train,col="lightblue",cex.axis = 0.50)
+```
+
+As the plot suggests, there traffic seems to be a bit higher when it's raining, there are some clouds or haze. We will make a binary variable and dummies for all of the unique values.
+
+```{r,message=FALSE,echo=TRUE}
+traffic_train$weather_general <- as.factor(traffic_train$weather_general)
+traffic_train$weather_general_bin <- ifelse(traffic_train$weather_general%in%c("Clouds","Rain","Haze","Drizzle"),1,0)
+```
+
+#### Weather detailed
+
+We will repeat the procedure for Weather detailed variable, as it is very similar to the previous one.
+
+```{r,echo=FALSE,message=TRUE}
+aov(traffic_train$traffic ~ traffic_train$weather_detailed) ->
+  traffic_anova_det
+summary(traffic_anova_det)
+```
+
+In this case, there also is some statistically significant discrepancies between means for particular values of this variable.
+
+```{r,message=FALSE,echo=FALSE}
+boxplot(traffic_train$traffic~traffic_train$weather_detailed, traffic_train,col="lightblue",cex.axis = 0.35,las=2, xlab = "", ylab = "")
+```
+
+As the plot suggests, there traffic seems to be a bit higher some particular values of weather detailed variables. We will make a binary variable and dummies for all of the unique values. Additionaly, a factor variable that orders rain and snow from the least dangerous one in terms of driving to the most dangerous will be created.
+
+```{r,message=FALSE,echo=TRUE}
+traffic_train$weather_detailed <- as.factor(traffic_train$weather_detailed)
+traffic_train$weather_detailed_bin <- ifelse(traffic_train$weather_detailed%in%c("broken clouds","few clouds","freezing rain","haze","heavy intensity drizzle","light intensity drizzle","light intensity shower rain","light rain","light rain and snow", "light shower snow", "overcast clouds", "proximity shower rain", "proximity thunderstorm with drizzle","scattered clouds", "shower snow"),1,0)
+
+#rain
+traffic_train$Rain_ordered <- factor(traffic_train$weather_detailed,
+                             # levels from lowest to highest
+                             levels = c("shower drizzle",
+                                        "very heavy rain",
+                                        "heavy intensity rain",
+                                        "moderate rain",
+                                        "drizzle",
+                                        "light intensity drizzle",
+                                        "light rain",
+                                        "heavy intensity drizzle",
+                                        "freezing rain",
+                                        "light intensity shower rain",
+                                        "light rain and snow"),
+                             ordered = TRUE) 
+traffic_train$Rain_ordered <- as.numeric(ifelse(is.na(traffic_train$Rain_ordered),0,traffic_train$Rain_ordered))
+
+#snow
+traffic_train$snow_ordered <- factor(traffic_train$weather_detailed,
+                                     # levels from lowest to highest
+                                     levels = c("light snow",
+                                                "heavy snow",
+                                                "sleet",
+                                                "snow",
+                                                "light shower snow",
+                                                "shower snow"),
+                                     ordered = TRUE)
+traffic_train$snow_ordered <- as.numeric(ifelse(is.na(traffic_train$snow_ordered),0,traffic_train$snow_ordered))
+
+```
+
+
+#### Date
+
+Date variable is crucial for our analysis as hour, without doubt, is the most important determinant of traffic. Relationship between traffic and year, month, weekdays and hours will be examined in order to be able to generate new variables and figure out what we should and shouldn't contain in our analysis.
+
+```{r,echo=FALSE}
+traffic_train$year <- as.numeric(substr(traffic_train$date_time,1,4))
+traffic_train$month <- as.numeric(substr(traffic_train$date_time,6,7))
+traffic_train$day <- as.numeric(substr(traffic_train$date_time,9,10))
+traffic_train$hour <- as.numeric(substr(traffic_train$date_time,12,13))
+traffic_train$dayn <- weekdays(as.Date(traffic_train$date_time))
+```
+
+```{r, echo=FALSE, out.width = '100%'}
+par(mfrow = c(2, 2))
+boxplot(traffic_train$traffic~traffic_train$year, col = "lightblue",main=NULL,las=2,xlab = "", ylab = "")
+boxplot(traffic_train$traffic~traffic_train$month, col = "lightblue",main=NULL,las=2,xlab = "", ylab = "")
+boxplot(traffic_train$traffic~traffic_train$dayn, col = "lightblue",main=NULL,las=2,xlab = "", ylab = "",cex.axis = 0.75)
+boxplot(traffic_train$traffic~traffic_train$hour, col = "lightblue",main=NULL,las=2,xlab = "", ylab = "")
+```
+
+Year and month do not differentiate the traffic in a significant way. Hour and weekdays will probably be a strong predictors of the dependent variable. We will create binary variable for the weekend and dummies for days of the week.
+
+```{r,echo=FALSE}
+traffic_train$dayn <- ifelse(traffic_train$dayn%in%c("sobota","niedziela"),1,0)
+traffic_train$dont_driveszn <- ifelse(traffic_train$month%in%c(11:12,1),-1,
+                                      ifelse(traffic_train$month%in%c(4,5,6,8,10),1,0))
+
+traffic_train[,19:26] <- dummy_cols(weekdays(as.Date(traffic_train$date_time)))
+
+for (i in c(4:10,13:16)){
+  traffic_train[,i] <- as.numeric(traffic_train[,i]) 
+}
+```
+
+#### Temperature
+
+Temperature variable is also a very important factor as it influences the traffic significantly. However, there are some outlying values, which we need to delete for the sake of devising a good model.
+
+
+```{r,echo=TRUE}
+max(traffic_train$temperature)
+min(traffic_train$temperature)
+
+traffic_train <- traffic_train[traffic_train$temperature>-30&traffic_train$temperature<35,]
+
+```
+
+We can now take a closer look at the relationship between explanatory variable and traffic:
+
+```{r,message=FALSE,echo=FALSE}
+ggplot(traffic_train,
+       aes(x = temperature,
+           y = traffic)) +
+  geom_point(col = "green") +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_bw()
+
+```
+
+Judging by the plot, there is not much we can do except from creating a binary variable and try if it's better than the unchanged one later on.
+
+```{r,message=FALSE,echo=TRUE}
+traffic_train$temperaturebin <- ifelse(traffic_train$temperature>5,1,0)
+```
+
+#### Clouds coverage in percentage
+
+Clouds coverage in percentage variable points out how clear the sky is during the specific time stamp. Its values range from 0 to 100 and its influence on traffic looks as follows:
+
+```{r, echo=FALSE,message=FALSE, out.width = '100%'}
+par(mfrow = c(1, 2))
+hist(traffic_train$clouds_coverage_pct)
+
+ggplot(traffic_train,
+       aes(x = clouds_coverage_pct,
+           y = traffic)) +
+  geom_point(col = "green") +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_bw()
+```
+
+We can't see any specific trend here. Additionaly, it is noticable that the values for this variables were rounded most of the times.
+
+#### Rain (mm)
+
+In genereal, this variable influence traffic in an intense way. Not only will more people use car during the rain but also the amount of accidents increases (especially when it's just starting) and that affects the traffic. Let's see if this conclusion is reflected by our data.
+
+```{r, echo=FALSE,message=FALSE, out.width = '100%'}
+
+traffic_train <- traffic_train[traffic_train$rain_mm<30,]
+
+ggplot(traffic_train,
+       aes(x = rain_mm,
+           y = traffic)) +
+  geom_point(col = "green") +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_bw()
+```
+
+The conclusion is correct. However, our variable has quite a little variance which can make it a weak predictor. We won't make any new variables out of this one.
+
+#### Snow (mm)
+
+Snow is also a phenomenon which disrupts a normal flow on the road. Its influence on traffic reflected by our data is as follows:
+
+```{r, echo=FALSE,message=FALSE, out.width = '100%'}
+par(mfrow = c(1, 2))
+
+ggplot(traffic_train,
+       aes(x = snow_mm,
+           y = traffic)) +
+  geom_point(col = "green") +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_bw()
+
+```
+
+Snow variable has little to no variance. We will probably not going to use this in the course of the research. For the sake of keeping our dataset not to big, we inspected the variability of our variables and removed them if it was to low.
+
+```{r, echo=FALSE,message=FALSE}
+
+#removing date_time & generating dummies
+traffic_train <- traffic_train[,-c(13:15)]
+
+traffic_train <- cbind(traffic_train,dummy_cols(traffic_train$weather_general))
+traffic_train <- cbind(traffic_train,dummy_cols(traffic_train$weather_detailed))
+traffic_train <- traffic_train[,-c(16,25,37)]
+
+
+traffic_train$hour_t <- ifelse(traffic_train$hour<6,1,
+                             ifelse(traffic_train$hour>5&traffic_train$hour<10,3,
+                                    ifelse(traffic_train$hour>9&traffic_train$hour<19,4,2)))
+
+( traffic_variables_nzv <- nearZeroVar(traffic_train, 
+                                      names = TRUE) )
+
+traffic_train <-
+  traffic_train[!colnames(traffic_train) %in% 
+                  traffic_variables_nzv]
+
+#outliers
+traffic_train <- traffic_train[traffic_train$traffic>30,]
+
+```
+
+
+## Summary of EDA and feature generation
+
+In order to gain more information from initial variables, new features were generated. Variables with near zero variance were excluded from the dataset. There was no need of data imputation nor cleaning as the dataset was ready for analysis. The only transformation was deleting outlying variables in case of temperature and rain ans traffic values = 0 as our main goal was to obtain MAPE as low as possible (without this transformation, MAPE would rise to infinity). Transformed dataset consisted of 32 variables and carried the following information:
+
+1. Date/time info such as: hour, binary variable weekend, factor variable time of a day, dummy variable day of the week.
+2. Weather general and detailed info: binary variables of general and detailed info, factors that scale the rain and snow intensity, dummies, clouds coverage %,rain,snow.
+3. Temperature: binary and numerical variable.
+
+In order to inspect which variables may be characterised by relation with traffic, the dependencies of explanatory and dependent variables were shown on the correlation plot below:
+
+```{r, echo=FALSE,message=FALSE, out.width = '100%'}
+
+traffic_correlations <- 
+  cor(traffic_train[,-c(1:3)],
+      use = "pairwise.complete.obs")
+
+traffic_numeric_vars_order <- 
+  # we take correlations with the Sale_Price
+  traffic_correlations[,"traffic"] %>% 
+  # sort them in the decreasing order
+  sort(decreasing = TRUE) %>%
+  # end extract just variables' names
+  names()
+
+traffic_numeric_vars_order
+
+corrplot.mixed(traffic_correlations[traffic_numeric_vars_order, 
+                                    traffic_numeric_vars_order],
+               upper = "square",
+               lower = "number",
+               tl.col = "black", # color of labels (variable names)
+               tl.pos = "lt",
+               tl.cex = 0.5)  # position of labels (lt = left and top)
+```
+
+As we can see, variables associated with hour, weekday and time of the day are strongly correlated with traffic. Also temperature and weather conditions seem to be in a relation with traffic.
+
+## Algorithms used and final results
+
+In order to be able to examine if there is no overfitting problem in our model, we split the dataset into two parts - train and test samples (70% and 30%).
+
+
+```{r, echo=TRUE,message=FALSE}
+
+#splitting the dataset
+traffic_train <- cbind(traffic_train,dummy_cols(traffic_train$hour_t))
+
+set.seed(1)
+
+traffic_train <- traffic_train[,-c(1:3)]
+
+traffic_train2 <- createDataPartition(traffic_train$traffic, # target variable
+                                          # share of the training sample
+                                          p = 0.7, 
+                                          # should result be a list?
+                                          list = FALSE) 
+traffic_train_model <- traffic_train[traffic_train2,]
+traffic_test_model <- traffic_train[-traffic_train2,]
+
+summary(traffic_train_model$traffic)
+summary(traffic_test_model$traffic)
+```
+
+Characteristics for both samples are almost identical. We can now build models on the training set and validate it on the test set. 
+
+### First algorithm - linear regression
+
+For starters, we will use simple linear regression as it is a good benchmark point. As it is a parametric method, it can be easily interpreted and understood. To begin with, we estimated a model with all variables in dataset against logarithm of dependent variable as the distribution of log(traffic) is closer to normal distribution. The next step was estimating linear regression model with best explanatory power. Final linear regression model can be described by a following equation:
+
+
+```{r, echo=TRUE,message=FALSE}
+model <- lm(log(traffic_train_model$traffic)~clouds_coverage_pct + 
+              temperature+dayn+dont_driveszn+.data_czwartek+.data_niedziela+.data_piątek+.data_poniedziałek+.data_Snow+.data_1+.data_2+.data_3,data = traffic_train_model)
+summary(model)
+varImp(model)
+
+```
+
+As we can see, the R2 value for this model is 0.77 which means that we explain 77% of variability of the data with our model. That is a good starting point for our analysis. All of the variables included are significant which means that they have real influence on the dependent variable. Increase in variables dont_driveszn, temperature, .data_czwartek and .data_piątek contributes to increase in variable log(traffic). Other variable's increase diminishes the dependent variable. When variable's importance is concerned, we can once again see how important date/time variable is for our analyis. 
+
+```{r, echo=TRUE,message=FALSE}
+pred <- predict(model, traffic_test_model)
+MAPE(exp(pred), (traffic_test_model$traffic))
+```
+
+Mean average percentage error is 0.38 which means that the average difference between the forecasted value and the actual value is 38%. Considering how sensitive this value is to errors in estimation of small values and that parametric methods, typically, do not fit the data as well as non parametric, this is a really good result. Now, let's take a closer look at the distribution of residuals.
+
+```{r, echo=TRUE,message=FALSE}
+hist(exp(pred)-traffic_test_model$traffic)
+
+```
+
+The distribution of the errors presented on the plot is certainly not close enough to normal. This means that our model does not meet the Gaussian assumptions and the estimations may be biased. However, this is still a good basis for further analysis. We will plot the predictions against real value in order to examine where the most inaccurate predictions were made.
+
+```{r, echo=TRUE,message=FALSE}
+ggplot(data.frame(real = traffic_test_model$traffic,
+                  predicted = exp(pred)),
+       aes(x = predicted, 
+           y = real)) +
+  geom_point(col = "blue") +
+  theme_bw()
+```
+
+The biggest mistakes in percentage terms are made for the smallest values. However, judging by the plot, the predictions could be better in general.
+
+### Second algorithm - KNN for regression task 
+
+We will now dive into a non-parametric method in order to get  better predictions for new data. KNN algorithm is very simple, yet powerful. In our case, we need to optimize k parameter, which is basically the number of closest neighbours that are taken into consideration when calculating the prediction for point i n-dimensional space (which is a mean of k nearest neighbours' observations). Basing on the linear regression and variables importance, we took into consideration all of the variables included in regression and scaled them. Next, we have found the combination of the variables (or variables containing similar infomration) that best fit the data. For the sake of stability of the model, cross-validation method was used. Eventually, the final form of the algorithm was as follows:
+
+```{r, echo=TRUE,message=FALSE}
+set.seed(1)
+
+ctrl_cv5x3 <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 3)
+model_knn <- train(
+  traffic ~ scale(temperature)+scale(hour)+scale(hour)+scale(.data_sobota)+scale(.data_niedziela)+scale(.data_piątek)+scale(.data_poniedziałek),
+  data = traffic_train_model,
+  method = 'knn',
+  tuneGrid   = expand.grid(k = 1:30),
+  trControl = ctrl_cv5x3
+)
+
+print(model_knn)
+plot(model_knn)
+
+```
+
+Cross-validation method found an optimal value of KNN model = 16. Model's fit to the data for k = 16 is really good. The R2 exceeds 92% and the Mean Absolute Error is (relatively to other models), quite low and equals 323.
+
+```{r, echo=FALSE,message=FALSE}
+pred_y_test = predict(model_knn, data.frame(traffic_test_model))
+pred_y_train = predict(model_knn, data.frame(traffic_train_model))
+mape_test = mean(abs(traffic_test_model$traffic-pred_y_test)/traffic_test_model$traffic)
+mape_train = mean(abs(traffic_train_model$traffic-pred_y_train)/traffic_train_model$traffic)
+cat("MAPE on test sample:",mape_test,"MAPE on train sample:",mape_train)
+```
+
+In order to check if overfitting problem exists in our case, we calculated MAPE for both, train and test set. Since MAPE equals 13.5% for the train sample and 15.4% in case of the test sample, we shouldn't worry that the performance of the model on unknown data will be poor. Let's take a look at our predictions and real values from test sample:  
+
+```{r, echo=TRUE,message=FALSE}
+ggplot(data.frame(real = traffic_test_model$traffic,
+                  predicted = pred_y_test),
+       aes(x = predicted, 
+           y = real)) +
+  geom_point(col = "blue") +
+  theme_bw()
+```
+
+```{r, echo=TRUE,message=FALSE}
+hist(pred_y_test-traffic_test_model$traffic)
+
+```
+
+It is clear that the algorithm struggles with predicting low values. However, the overall performance looks much better than in the case of previous algorithm and fit to the data is really good.
+
+### Third algorithm - Support vector regression
+
+Support Vector Regression was, by far, the trickiest model to estimate as there are a lot of combinations of parameters to set. Not only we needed to find the optimal cost, but also appropriate kernel, degree and scaling parameter. Similar combinations of variables were taken into consideration during the model estimation. In order to try various possibilities, three types of kernel: linear, polynomial and radial was used (and combinations of costs, scale parameters and degrees). Similarly as in case of KNN, cross-validation technique was used in order to ensure that our solution is stable. However, for the sake of faster computations, only optimal model will be presented here. The final values used for the model were sigma = 5 and C = 5 (radial kernel):
+
+```{r, echo=FALSE,message=FALSE}
+#traffic_train_model <- sample_n(traffic_train_model,2000,replace = FALSE)
+```
+
+```{r, echo=TRUE,message=FALSE}
+ctrl_cv5x3 <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 3)
+
+parametersC_sigma <- 
+  expand.grid(C = c(5,10),
+              sigma = c(5,10))
+
+
+set.seed(987654321)
+
+data1.svm_Radial2 <- train(traffic ~ dayn + hour + temperature, 
+                           data = traffic_train_model, 
+                           method = "svmRadial",
+                           tuneGrid = parametersC_sigma,
+                           trControl = ctrl_cv5x3)
+
+# it may take several seconds
+
+print(data1.svm_Radial2)
+fore_svm_Radial2 <- predict(data1.svm_Radial2,traffic_test_model)
+foretr_svm_Radial2 <- predict(data1.svm_Radial2,traffic_train_model)
+MAPE(traffic_test_model$traffic,fore_svm_Radial2)
+MAPE(traffic_train_model$traffic,foretr_svm_Radial2)
+```
+
+Judging by MAPE, RSquared, RMSE and MAE, Support Vector Regression performs slightly worse than KNN taking all three values into consideration. However, the metrics are really close and it is difficult to decide which model to choose. Let's take a look at the prediction and see if the model performs better in some specific cases.
+
+```{r, echo=TRUE,message=FALSE}
+ggplot(data.frame(real = traffic_test_model$traffic,
+                  predicted = fore_svm_Radial2),
+       aes(x = predicted, 
+           y = real)) +
+  geom_point(col = "blue") +
+  theme_bw()
+```
+
+The predictions for small values are also much worse than for big values similarly to KNN. However, the predictions are more widely dispersed which is a sign that it is safer to choose KNN.
+
+## Conclusions
+
+In the course of analysis described above, traffic dataset was used in order to build a model that predicts the traffic as precisely as it is possible. Explanatory Data Analysis was a crucial part of the proccess of getting to know the phenomenon of traffic. Not only did it show how the dependencies between explanatory and dependent variables look like, but also enabled us to transform variables into new ones, which contained much more information than initial dataset. Taking this insight into consideration, modelling part was completed and 3 final models estimated. Firstly, linear regression model was used in order to not only generate predicitons but also see which variables are important and how significantly as this model is simple to interpret. It came as no surprise that the strongest impact on traffic was reflected by hour or time of the day in general, days of the week and weather. Keeping that in mind, KNN model was estimated using various combinations of above mentioned factors. Additionally, cross-validation technique was used in order to make sure that our model is stable, does not overfit the data and can perform on new dataset. By using that technique, accurate predictions were generated which fitted very well to the data resulting in measures such as MAPE, RSquared, MAE and RMSE being more than satisfactory. At last, SVR model was estimated and gave similar results to KNN. As its predictions were not as stable as KNN's, we decided to go with KNN. All in all, in the course of the research presented above, we were able to build a model that precisely predicts traffic. Possible imporvements of our solution are listed below. 
+
+### Possible improvements of analysis
+
+1. Taking into consideration characteristics specific for the region where data was gathered.
+2. Using more advanced techniques.
+3. Further data transformation.
+4. Including in model special days, such as holidays etc.
+5. Devising a solution for accurate prediction of low values.
+
+
